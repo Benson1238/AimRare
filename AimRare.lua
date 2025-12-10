@@ -1,15 +1,16 @@
 -- AimRare.lua
 -- Lightweight client-side aiming/visuals hub with dark UI
 
--- Services
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local Camera = Workspace.CurrentCamera
 
 -- Configuration
 local settings = {
@@ -20,6 +21,29 @@ local settings = {
     smoothness = 0.12,
     visuals = true,
 }
+
+local ConfigManager = {}
+ConfigManager.values = settings
+ConfigManager._bindings = {}
+ConfigManager._changed = Instance.new("BindableEvent")
+
+function ConfigManager:Update(key, value)
+    if self.values[key] == value then
+        return
+    end
+    self.values[key] = value
+    if self._bindings[key] then
+        for _, callback in ipairs(self._bindings[key]) do
+            callback(value)
+        end
+    end
+    self._changed:Fire(key, value)
+end
+
+function ConfigManager:Bind(key, callback)
+    self._bindings[key] = self._bindings[key] or {}
+    table.insert(self._bindings[key], callback)
+end
 
 -- Utility
 local function safeParent(gui)
@@ -126,169 +150,185 @@ local function createSection(name)
     return section
 end
 
-local function createToggle(name, default, callback)
-    local button = newInstance("TextButton", {
-        Parent = container,
-        BackgroundColor3 = Color3.fromRGB(28, 28, 28),
-        BorderSizePixel = 0,
-        Size = UDim2.new(1, -4, 0, 32),
-        AutoButtonColor = false,
-        Text = "",
-    })
-    newInstance("UICorner", { Parent = button, CornerRadius = UDim.new(0, 8) })
+local UIComponentFactory = {}
 
-    local label = newInstance("TextLabel", {
-        Parent = button,
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 10, 0, 0),
-        Size = UDim2.new(1, -80, 1, 0),
-        Font = Enum.Font.Gotham,
-        Text = name,
-        TextColor3 = Color3.fromRGB(220, 220, 220),
-        TextSize = 14,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    })
-
-    local indicator = newInstance("Frame", {
-        Parent = button,
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -10, 0.5, 0),
-        Size = UDim2.fromOffset(46, 18),
-        BackgroundColor3 = Color3.fromRGB(45, 45, 45),
-        BorderSizePixel = 0,
-    })
-    newInstance("UICorner", { Parent = indicator, CornerRadius = UDim.new(1, 0) })
-
-    local knob = newInstance("Frame", {
-        Parent = indicator,
-        Size = UDim2.fromOffset(18, 18),
-        BackgroundColor3 = Color3.fromRGB(120, 120, 120),
-        BorderSizePixel = 0,
-    })
-    newInstance("UICorner", { Parent = knob, CornerRadius = UDim.new(1, 0) })
-
-    local state = default
-
-    local function refresh()
-        indicator.BackgroundColor3 = state and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(45, 45, 45)
-        knob.Position = state and UDim2.new(1, -18, 0, 0) or UDim2.new(0, 0, 0, 0)
-    end
-
-    button.MouseButton1Click:Connect(function()
-        state = not state
-        refresh()
-        callback(state)
-    end)
-
-    refresh()
-    button.LayoutOrder = #container:GetChildren()
-    return {
-        Set = function(value)
-            state = value
-            refresh()
-        end,
-    }
+local function bindLayoutOrder(object)
+    object.LayoutOrder = #container:GetChildren()
 end
 
-local function createSlider(name, min, max, default, callback)
-    local frame = newInstance("Frame", {
-        Parent = container,
-        BackgroundColor3 = Color3.fromRGB(28, 28, 28),
-        BorderSizePixel = 0,
-        Size = UDim2.new(1, -4, 0, 46),
-    })
-    newInstance("UICorner", { Parent = frame, CornerRadius = UDim.new(0, 8) })
+function UIComponentFactory.create(def)
+    if def.type == "toggle" then
+        local button = newInstance("TextButton", {
+            Parent = container,
+            BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, -4, 0, 32),
+            AutoButtonColor = false,
+            Text = "",
+        })
+        newInstance("UICorner", { Parent = button, CornerRadius = UDim.new(0, 8) })
 
-    local label = newInstance("TextLabel", {
-        Parent = frame,
-        BackgroundTransparency = 1,
-        Position = UDim2.new(0, 10, 0, 4),
-        Size = UDim2.new(1, -20, 0, 18),
-        Font = Enum.Font.Gotham,
-        Text = string.format("%s: %d", name, default),
-        TextColor3 = Color3.fromRGB(220, 220, 220),
-        TextSize = 14,
-        TextXAlignment = Enum.TextXAlignment.Left,
-    })
+        newInstance("TextLabel", {
+            Parent = button,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, 0),
+            Size = UDim2.new(1, -80, 1, 0),
+            Font = Enum.Font.Gotham,
+            Text = def.name,
+            TextColor3 = Color3.fromRGB(220, 220, 220),
+            TextSize = 14,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
 
-    local bar = newInstance("Frame", {
-        Parent = frame,
-        BackgroundColor3 = Color3.fromRGB(40, 40, 40),
-        BorderSizePixel = 0,
-        Size = UDim2.new(1, -20, 0, 10),
-        Position = UDim2.new(0, 10, 0, 26),
-    })
-    newInstance("UICorner", { Parent = bar, CornerRadius = UDim.new(1, 0) })
+        local indicator = newInstance("Frame", {
+            Parent = button,
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -10, 0.5, 0),
+            Size = UDim2.fromOffset(46, 18),
+            BackgroundColor3 = Color3.fromRGB(45, 45, 45),
+            BorderSizePixel = 0,
+        })
+        newInstance("UICorner", { Parent = indicator, CornerRadius = UDim.new(1, 0) })
 
-    local fill = newInstance("Frame", {
-        Parent = bar,
-        BackgroundColor3 = Color3.fromRGB(255, 0, 0),
-        BorderSizePixel = 0,
-        Size = UDim2.new((default - min) / (max - min), 0, 1, 0),
-    })
-    newInstance("UICorner", { Parent = fill, CornerRadius = UDim.new(1, 0) })
+        local knob = newInstance("Frame", {
+            Parent = indicator,
+            Size = UDim2.fromOffset(18, 18),
+            BackgroundColor3 = Color3.fromRGB(120, 120, 120),
+            BorderSizePixel = 0,
+        })
+        newInstance("UICorner", { Parent = knob, CornerRadius = UDim.new(1, 0) })
 
-    local dragging = false
-    local current = default
+        local state = def.default
 
-    local function setValueFromX(x)
-        local relative = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-        current = math.floor(min + (max - min) * relative + 0.5)
-        fill.Size = UDim2.new((current - min) / (max - min), 0, 1, 0)
-        label.Text = string.format("%s: %d", name, current)
-        callback(current)
+        local function refresh()
+            indicator.BackgroundColor3 = state and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(45, 45, 45)
+            knob.Position = state and UDim2.new(1, -18, 0, 0) or UDim2.new(0, 0, 0, 0)
+        end
+
+        button.MouseButton1Click:Connect(function()
+            state = not state
+            refresh()
+            if def.bindKey then
+                ConfigManager:Update(def.bindKey, state)
+            end
+            if def.callback then
+                def.callback(state)
+            end
+        end)
+
+        refresh()
+        bindLayoutOrder(button)
+        return button
+    elseif def.type == "slider" then
+        local frame = newInstance("Frame", {
+            Parent = container,
+            BackgroundColor3 = Color3.fromRGB(28, 28, 28),
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, -4, 0, 46),
+        })
+        newInstance("UICorner", { Parent = frame, CornerRadius = UDim.new(0, 8) })
+
+        local label = newInstance("TextLabel", {
+            Parent = frame,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 10, 0, 4),
+            Size = UDim2.new(1, -20, 0, 18),
+            Font = Enum.Font.Gotham,
+            Text = string.format("%s: %d", def.name, def.default),
+            TextColor3 = Color3.fromRGB(220, 220, 220),
+            TextSize = 14,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        })
+
+        local bar = newInstance("Frame", {
+            Parent = frame,
+            BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, -20, 0, 10),
+            Position = UDim2.new(0, 10, 0, 26),
+        })
+        newInstance("UICorner", { Parent = bar, CornerRadius = UDim.new(1, 0) })
+
+        local fill = newInstance("Frame", {
+            Parent = bar,
+            BackgroundColor3 = Color3.fromRGB(255, 0, 0),
+            BorderSizePixel = 0,
+            Size = UDim2.new((def.default - def.min) / (def.max - def.min), 0, 1, 0),
+        })
+        newInstance("UICorner", { Parent = fill, CornerRadius = UDim.new(1, 0) })
+
+        local dragging = false
+        local current = def.default
+
+        local function setValueFromX(x)
+            local relative = math.clamp((x - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
+            current = math.floor(def.min + (def.max - def.min) * relative + 0.5)
+            fill.Size = UDim2.new((current - def.min) / (def.max - def.min), 0, 1, 0)
+            label.Text = string.format("%s: %d", def.name, current)
+            if def.bindKey then
+                ConfigManager:Update(def.bindKey, def.transform and def.transform(current) or current)
+            end
+            if def.callback then
+                def.callback(current)
+            end
+        end
+
+        bar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                setValueFromX(input.Position.X)
+            end
+        end)
+
+        bar.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                setValueFromX(input.Position.X)
+            end
+        end)
+
+        bindLayoutOrder(frame)
+        return frame
     end
+end
 
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            setValueFromX(input.Position.X)
-        end
-    end)
-
-    bar.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            setValueFromX(input.Position.X)
-        end
-    end)
-
-    frame.LayoutOrder = #container:GetChildren()
-    return {
-        Set = function(value)
-            current = math.clamp(value, min, max)
-            fill.Size = UDim2.new((current - min) / (max - min), 0, 1, 0)
-            label.Text = string.format("%s: %d", name, current)
-            callback(current)
-        end,
-    }
+local function createComponent(def)
+    return UIComponentFactory.create(def)
 end
 
 createSection("Aimbot")
-createToggle("Enabled", settings.aimbot, function(state)
-    settings.aimbot = state
-end)
-createToggle("Team Check", settings.teamCheck, function(state)
-    settings.teamCheck = state
-end)
-local fovSlider = createSlider("FOV", 30, 400, settings.fovRadius, function(value)
-    settings.fovRadius = value
-end)
-local smoothSlider = createSlider("Smoothness", 1, 100, math.floor(settings.smoothness * 100), function(value)
-    settings.smoothness = value / 100
-end)
+createComponent({ type = "toggle", name = "Enabled", default = settings.aimbot, bindKey = "aimbot" })
+createComponent({ type = "toggle", name = "Team Check", default = settings.teamCheck, bindKey = "teamCheck" })
+createComponent({ type = "slider", name = "FOV", min = 30, max = 400, default = settings.fovRadius, bindKey = "fovRadius" })
+createComponent({
+    type = "slider",
+    name = "Smoothness",
+    min = 1,
+    max = 100,
+    default = math.floor(settings.smoothness * 100),
+    bindKey = "smoothness",
+    transform = function(value)
+        return value / 100
+    end,
+})
 
 createSection("Visuals")
-createToggle("Show FOV", settings.showFov, function(state)
-    settings.showFov = state
+createComponent({ type = "toggle", name = "Show FOV", default = settings.showFov, bindKey = "showFov" })
+createComponent({ type = "toggle", name = "Highlight Players", default = settings.visuals, bindKey = "visuals" })
+
+ConfigManager:Bind("visuals", function(enabled)
+    if not enabled then
+        clearHighlights()
+    end
 end)
-createToggle("Highlight Players", settings.visuals, function(state)
-    settings.visuals = state
+
+ConfigManager:Bind("showFov", function()
+    updateFovCircle()
 end)
 
 -- FOV circle (Drawing API if available, otherwise Frame)
@@ -315,23 +355,42 @@ else
     })
 end
 
--- Visuals: use Highlight objects per character
+-- Visuals: use Highlight objects per character with pooling
 local activeHighlights = {}
+local highlightPool = {}
 
-local function clearHighlights()
-    for player, highlight in pairs(activeHighlights) do
-        if highlight and highlight.Parent then
-            highlight:Destroy()
-        end
+local function acquireHighlight()
+    local highlight = table.remove(highlightPool)
+    if not highlight then
+        highlight = Instance.new("Highlight")
+        highlight.FillColor = Color3.fromRGB(255, 0, 0)
+        highlight.FillTransparency = 0.8
+        highlight.OutlineColor = Color3.fromRGB(0, 0, 0)
+        highlight.OutlineTransparency = 0.4
+    end
+    highlight.Enabled = true
+    return highlight
+end
+
+local function releaseHighlight(player)
+    local highlight = activeHighlights[player]
+    if highlight then
+        highlight.Enabled = false
+        highlight.Adornee = nil
+        highlight.Parent = nil
+        table.insert(highlightPool, highlight)
         activeHighlights[player] = nil
     end
 end
 
-local function applyHighlight(player)
-    if not settings.visuals then
-        return
+local function clearHighlights()
+    for player in pairs(activeHighlights) do
+        releaseHighlight(player)
     end
-    if player == LocalPlayer then
+end
+
+local function applyHighlight(player)
+    if not settings.visuals or player == LocalPlayer then
         return
     end
     local character = player.Character
@@ -339,25 +398,16 @@ local function applyHighlight(player)
         return
     end
     local highlight = activeHighlights[player]
-    if not highlight or not highlight.Parent then
-        highlight = Instance.new("Highlight")
-        highlight.FillColor = Color3.fromRGB(255, 0, 0)
-        highlight.FillTransparency = 0.8
-        highlight.OutlineColor = Color3.fromRGB(0, 0, 0)
-        highlight.OutlineTransparency = 0.4
-        highlight.Adornee = character
-        highlight.Parent = character
+    if not highlight then
+        highlight = acquireHighlight()
         activeHighlights[player] = highlight
-    else
-        highlight.Adornee = character
     end
+    highlight.Adornee = character
+    highlight.Parent = character
 end
 
 Players.PlayerRemoving:Connect(function(player)
-    if activeHighlights[player] then
-        activeHighlights[player]:Destroy()
-        activeHighlights[player] = nil
-    end
+    releaseHighlight(player)
 end)
 
 Players.PlayerAdded:Connect(function(player)
@@ -377,9 +427,11 @@ local function isAlive(player)
     return humanoid and humanoid.Health > 0
 end
 
-local function getMousePosition()
-    local pos = UserInputService:GetMouseLocation()
-    return Vector2.new(pos.X, pos.Y)
+local function getSafeScreenCenter()
+    local insetTopLeft, insetBottomRight = GuiService:GetGuiInset()
+    local viewport = Camera.ViewportSize
+    local safeSize = viewport - insetTopLeft - insetBottomRight
+    return insetTopLeft + safeSize / 2
 end
 
 local function worldToViewport(point)
@@ -394,22 +446,42 @@ local function isSameTeam(player)
     return false
 end
 
+local function isVisible(hrp, character)
+    local origin = Camera.CFrame.Position
+    local direction = hrp.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LocalPlayer.Character }
+    local result = Workspace:Raycast(origin, direction, params)
+    if not result then
+        return true
+    end
+    return result.Instance:IsDescendantOf(character)
+end
+
 local function getClosestTarget()
     local closestPlayer
-    local shortestDistance = settings.fovRadius
-    local mousePos = getMousePosition()
+    local bestScore = math.huge
+    local screenCenter = getSafeScreenCenter()
 
     for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and isAlive(player) and not isSameTeam(player) then
+        if player ~= LocalPlayer and player.Parent == Players and isAlive(player) and not isSameTeam(player) then
             local character = player.Character
             local hrp = character and character:FindFirstChild("HumanoidRootPart")
-            if hrp then
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if hrp and humanoid then
                 local screenPos, onScreen = worldToViewport(hrp.Position)
                 if onScreen then
-                    local distance = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                    if distance <= shortestDistance then
-                        shortestDistance = distance
-                        closestPlayer = player
+                    local screenDistance = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                    if screenDistance <= settings.fovRadius and isVisible(hrp, character) then
+                        local worldDistance = (hrp.Position - Camera.CFrame.Position).Magnitude
+                        local healthFactor = math.max(humanoid.Health, 1) / math.max(humanoid.MaxHealth, 1)
+                        local proximityScore = worldDistance * 0.1
+                        local blendedScore = (screenDistance * (1 + healthFactor)) + proximityScore
+                        if blendedScore < bestScore then
+                            bestScore = blendedScore
+                            closestPlayer = player
+                        end
                     end
                 end
             end
@@ -426,15 +498,15 @@ local function updateFovCircle()
         return
     end
 
-    local mousePos = getMousePosition()
+    local screenCenter = getSafeScreenCenter()
     if fovCircle.Radius then -- Drawing object
         fovCircle.Visible = settings.showFov
         fovCircle.Radius = settings.fovRadius
-        fovCircle.Position = mousePos
+        fovCircle.Position = screenCenter
     else
         fovCircle.Visible = settings.showFov
         fovCircle.Size = UDim2.fromOffset(settings.fovRadius * 2, settings.fovRadius * 2)
-        fovCircle.Position = UDim2.fromOffset(mousePos.X - settings.fovRadius, mousePos.Y - settings.fovRadius)
+        fovCircle.Position = UDim2.fromOffset(screenCenter.X - settings.fovRadius, screenCenter.Y - settings.fovRadius)
     end
 end
 
@@ -447,14 +519,54 @@ local function aimAt(target)
     if not hrp then
         return
     end
-    local direction = (hrp.Position - Camera.CFrame.Position).Unit
-    local desired = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + direction)
-    local lerped = Camera.CFrame:Lerp(desired, settings.smoothness)
-    Camera.CFrame = lerped
+    local cameraCFrame = Camera.CFrame
+    local direction = (hrp.Position - cameraCFrame.Position).Unit
+    local currentLook = cameraCFrame.LookVector
+
+    local function toAngles(vec)
+        local yaw = math.atan2(vec.X, vec.Z)
+        local pitch = math.asin(math.clamp(vec.Y, -1, 1))
+        return yaw, pitch
+    end
+
+    local function deltaAngle(targetAngle, currentAngle)
+        local diff = targetAngle - currentAngle
+        while diff > math.pi do
+            diff = diff - (2 * math.pi)
+        end
+        while diff < -math.pi do
+            diff = diff + (2 * math.pi)
+        end
+        return diff
+    end
+
+    local targetYaw, targetPitch = toAngles(direction)
+    local currentYaw, currentPitch = toAngles(currentLook)
+
+    local deltaYaw = deltaAngle(targetYaw, currentYaw)
+    local deltaPitch = deltaAngle(targetPitch, currentPitch)
+    local angleMagnitude = math.sqrt(deltaYaw ^ 2 + deltaPitch ^ 2)
+    local distance = (hrp.Position - cameraCFrame.Position).Magnitude
+
+    local angleFactor = math.clamp(angleMagnitude / math.pi, 0, 1)
+    local distanceFactor = math.clamp(distance / 500, 0, 1)
+    local adaptiveSmoothness = math.clamp(settings.smoothness + ((angleFactor + distanceFactor) / 2) * (1 - settings.smoothness), 0, 1)
+
+    local newYaw = currentYaw + deltaYaw * adaptiveSmoothness
+    local newPitch = currentPitch + deltaPitch * adaptiveSmoothness
+    local newCFrame = CFrame.new(cameraCFrame.Position) * CFrame.fromOrientation(newPitch, newYaw, 0)
+    Camera.CFrame = newCFrame
 end
 
-RunService.RenderStepped:Connect(function()
+local lastVisualUpdate = 0
+
+local function updateVisuals(dt)
     updateFovCircle()
+    if time() - lastVisualUpdate < 0.1 then
+        return
+    end
+    lastVisualUpdate = time()
+
     if settings.visuals then
         for _, player in ipairs(Players:GetPlayers()) do
             applyHighlight(player)
@@ -462,7 +574,9 @@ RunService.RenderStepped:Connect(function()
     else
         clearHighlights()
     end
+end
 
+local function executeAimbot()
     if not settings.aimbot then
         currentTarget = nil
         return
@@ -472,7 +586,10 @@ RunService.RenderStepped:Connect(function()
     if currentTarget then
         aimAt(currentTarget)
     end
-end)
+end
+
+RunService.Heartbeat:Connect(updateVisuals)
+RunService.RenderStepped:Connect(executeAimbot)
 
 -- UI drag
 local dragging = false
